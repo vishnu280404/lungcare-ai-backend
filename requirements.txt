@@ -3,3 +3,4 @@ tensorflow==2.21.0
 Pillow
 flask-cors
 werkzeug
+gunicorn
