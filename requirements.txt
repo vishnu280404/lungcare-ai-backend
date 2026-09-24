@@ -1,0 +1,5 @@
+Flask==3.0.0
+tensorflow==2.21.0
+Pillow
+flask-cors
+werkzeug
