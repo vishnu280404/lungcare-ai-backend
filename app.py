@@ -1,36 +1,46 @@
 import os
 import io
-import gc
 import numpy as np
-import tensorflow as tf
 from PIL import Image
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import tensorflow as tf
 
 app = Flask(__name__)
 CORS(app)
 
+# TFLite model path
 MODEL_PATH = os.path.join(
     os.path.dirname(__file__),
     "model",
-    "densenet121_lung_opacity_final.keras"
+    "densenet121_lung_opacity.tflite"
 )
 
+# Load TFLite model
 try:
-    model = tf.keras.models.load_model(MODEL_PATH)
-    print("Model loaded successfully.")
+    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    print("TFLite model loaded successfully.")
+
 except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
+    print(f"Error loading TFLite model: {e}")
+    interpreter = None
+    input_details = None
+    output_details = None
 
 
 def preprocess_image(image_bytes):
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize((224, 224))
 
-    image_array = np.asarray(image, dtype=np.float32)
+    image_array = np.array(image).astype("float32")
     image_array = np.expand_dims(image_array, axis=0)
 
+    # DenseNet121 preprocessing
     image_array = tf.keras.applications.densenet.preprocess_input(
         image_array
     )
@@ -38,12 +48,20 @@ def preprocess_image(image_bytes):
     return image_array
 
 
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "LungCare AI backend is running",
+        "model": "DenseNet121 TFLite"
+    })
+
+
 @app.route("/predict", methods=["POST"])
 def predict():
 
-    if model is None:
+    if interpreter is None:
         return jsonify({
-            "error": "Model not loaded on server."
+            "error": "TFLite model not loaded on server."
         }), 500
 
     if "image" not in request.files:
@@ -63,11 +81,21 @@ def predict():
 
         processed_image = preprocess_image(image_bytes)
 
-        # Direct inference
-        prediction = model(
-            processed_image,
-            training=False
-        ).numpy()[0]
+        # Send image to TFLite model
+        interpreter.set_tensor(
+            input_details[0]["index"],
+            processed_image
+        )
+
+        # Run inference
+        interpreter.invoke()
+
+        # Get prediction
+        prediction = interpreter.get_tensor(
+            output_details[0]["index"]
+        )
+
+        probs = prediction[0]
 
         class_names = [
             "Lung_Opacity",
@@ -75,45 +103,37 @@ def predict():
             "split_data"
         ]
 
-        class_index = int(np.argmax(prediction))
+        class_index = int(np.argmax(probs))
         predicted_label = class_names[class_index]
-        confidence = float(prediction[class_index])
+        confidence = float(probs[class_index])
 
-        result = {
+        print("Prediction:", predicted_label)
+        print("Confidence:", confidence)
+
+        return jsonify({
             "prediction": predicted_label,
             "class_index": class_index,
             "confidence": confidence,
             "probabilities": {
-                "Lung_Opacity": float(prediction[0]),
-                "Normal": float(prediction[1]),
-                "split_data": float(prediction[2])
+                "Lung_Opacity": float(probs[0]),
+                "Normal": float(probs[1]),
+                "split_data": float(probs[2])
             }
-        }
-
-        del processed_image
-        del prediction
-        gc.collect()
-
-        return jsonify(result)
+        })
 
     except Exception as e:
-        print("Prediction error:", e)
+        print("Prediction error:", str(e))
 
         return jsonify({
             "error": str(e)
         }), 500
 
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "status": "LungCare AI backend is running"
-    })
-
-
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
+        port=port,
         debug=False
     )
