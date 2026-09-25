@@ -33,8 +33,32 @@ except Exception as e:
     output_details = None
 
 
-def preprocess_image(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+def is_valid_xray(image):
+    """
+    A simple heuristic validation to check if an image is likely a chest X-ray.
+    Note: Simple image heuristics cannot guarantee perfect X-ray detection.
+    A separate X-ray/non-X-ray binary classifier model would be the proper long-term solution.
+    """
+    img_array = np.array(image)
+    
+    # 1. Check if it's mostly grayscale
+    # If the image is RGB, calculate standard deviation across the color channels
+    if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+        channel_std = np.std(img_array, axis=2)
+        mean_std = np.mean(channel_std)
+        # Grayscale images have R=G=B, so std is 0. We allow some tolerance.
+        if mean_std > 10.0:
+            return False
+            
+    # 2. Check if image lacks sufficient contrast (e.g., solid color)
+    variance = np.var(img_array)
+    if variance < 50.0:
+        return False
+        
+    return True
+
+
+def preprocess_image(image):
     image = image.resize((224, 224))
 
     image_array = np.array(image).astype("float32")
@@ -78,8 +102,20 @@ def predict():
 
     try:
         image_bytes = file.read()
+        
+        # Open image
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        
+        # Validate if image is likely an X-ray
+        if not is_valid_xray(image):
+            return jsonify({
+                "prediction": "Invalid Image",
+                "confidence": 0,
+                "message": "Please upload a valid chest X-ray image."
+            })
 
-        processed_image = preprocess_image(image_bytes)
+        # Process valid image
+        processed_image = preprocess_image(image)
 
         # Send image to TFLite model
         interpreter.set_tensor(
